@@ -1,5 +1,4 @@
 #!/bin/bash
-# shellcheck disable=SC2016
 
 # Copyright (C) 2020-2021 Maddison Hellstrom <https://github.com/b0o>
 #
@@ -22,41 +21,92 @@
 set -Eeuo pipefail
 shopt -s inherit_errexit
 
-declare -g basedir reporoot readme prog
-basedir="$(realpath -e "$(dirname "$(readlink -e "${BASH_SOURCE[0]}")")")"
-reporoot="$(realpath -e "$basedir/..")"
-readme="$reporoot/README.md"
-prog="${reporoot}/refind-genconf"
+declare -g self prog basedir reporoot
+self="$(readlink -e "${BASH_SOURCE[0]}")"
+prog="$(basename "$self")"
+basedir="$(realpath -m "$self/..")"
+reporoot="$(realpath -m "$basedir/..")"
 
-declare -gA sections=()
+# gendocs configuration {{{
 
-sections[USAGE]="$(printf '```\n%s\n```' "$("$prog" -h 2>&1)")"
-sections[CONF]="$(printf '```bash\n%s\n```' "$("$prog" -X 2>&1)")"
-sections[RESULT]="$(printf '```conf\n%s\n```' "$("$prog" -c <("$prog" -X 2>&1) | sed 's/\\/\\\\/g')")"
-sections[LICENSE]="$(
-  cat << EOF
+declare -g rgc="${reporoot}/refind-genconf"
+
+declare -gA targets=(
+  [readme]="$reporoot/README.md"
+)
+
+function target_readme() {
+  section -s USAGE -c <<< "$("$rgc" -h 2>&1)"
+  section -s CONF -C bash <<< "$("$rgc" -X 2>&1)"
+  section -s RESULT -C ini <<< "$("$rgc" -c <("$rgc" -X 2>&1) | sed 's/\\/\\\\/g')"
+  section -s LICENSE << EOF
 &copy; 2020-$(date +%Y) Maddison Hellstrom
 
 Released under the GNU General Public License, version 3.0 or later.
 EOF
-)"
+}
+
+# }}}
+
+declare -gA sections
+
+function section() {
+  local section
+  local -i code=0
+  local lang
+
+  local opt OPTARG
+  local -i OPTIND
+  while getopts "s:cC:" opt "$@"; do
+    case "$opt" in
+    s)
+      section="$OPTARG"
+      ;;
+    c)
+      code=1
+      ;;
+    C)
+      code=1
+      lang="$OPTARG"
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  local -a lines=()
+
+  if [[ $code -eq 1 ]]; then
+    lines+=('```'"${lang:-}")
+  fi
+
+  mapfile -tO ${#lines[@]} lines
+
+  if [[ $code -eq 1 ]]; then
+    lines+=('```')
+  fi
+
+  sections["$section"]="$(printf '%s\n' "${lines[@]}")"
+}
 
 function regen_section() {
   local section="$1"
-  local content="$2"
-  awk -v "section=$section" -v "content=$content" '
+  local content="${sections[$section]}"
+  < "$target" awk -v "section=$section" -v "content=$content" '
     BEGIN {
       d = 0
     }
 
     {
-      if (match($0, "<!-- " section " -->")) {
+      if (match($0, "^<!-- " section " -->$")) {
         d = 1
         print $0
         print content
         next
       }
-      if (match($0, "<!-- /" section " -->")) {
+      if (match($0, "^<!-- /" section " -->$")) {
         d = 0
         print $0
         next
@@ -66,10 +116,53 @@ function regen_section() {
     d == 0 {
       print $0
     }
-  ' "$readme"
+  '
 }
 
-for sec in "${!sections[@]}"; do
-  regen_section "$sec" "${sections[$sec]}" > "${readme}_"
-  mv "${readme}_" "$readme"
-done
+function main() {
+  local opt OPTARG
+  local -i OPTIND
+  while getopts "h" opt "$@"; do
+    case "$opt" in
+    h)
+      echo "usage: $prog [opt].. [target].." >&2
+      return 0
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  local -a targets_selected=("${!targets[@]}")
+
+  if [[ $# -gt 0 ]]; then
+    targets_selected=("$@")
+  fi
+
+  local t target
+  for t in "${targets_selected[@]}"; do
+    [[ -v "targets[$t]" ]] || {
+      echo "unknown target: $t" >&2
+      return 1
+    }
+    target="${targets["$t"]}"
+    [[ -e "$target" ]] || {
+      echo "target file not found: $target" >&2
+      return 1
+    }
+    sections=()
+    "target_${t}" || {
+      echo "unknown target: $t"
+      return 1
+    }
+    local s
+    for s in "${!sections[@]}"; do
+      regen_section "$s" > "${target}_"
+      mv "${target}_" "$target"
+    done
+  done
+}
+
+main "$@"
