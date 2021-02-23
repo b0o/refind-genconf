@@ -169,7 +169,7 @@ params_basic=(
   "quiet"
   "consoleblank=60"
   "fbcon=scrollback:256k"
-  "initrd=\\amd-ucode.img"
+  "initrd=\\\\amd-ucode.img"
 )
 
 # Kernel parameters to pass for the 'apparmor' boot type.
