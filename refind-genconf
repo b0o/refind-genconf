@@ -1,0 +1,441 @@
+#!/bin/bash
+#shellcheck disable=2034
+
+# Yo, I heard you like confs, so here's a conf for your conf.
+#
+# Copyright (c) 2021 Maddison Hellstrom (github.com/b0o)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+set -euo pipefail
+shopt -s inherit_errexit
+
+declare prog
+prog="$(basename "${BASH_SOURCE[0]}")"
+
+declare -i indent=0
+declare conf
+
+declare -g boot
+declare -g menu_title
+declare -ga conf_outer
+declare -ga conf_inner
+declare -ga boot_types
+declare -g default_kernel
+declare -g default_type
+declare -ga kernels
+declare -g indent_char
+declare -gi indent_size
+
+function default_conf() {
+  cat >&2 << EOF
+# Default configuration for $prog
+
+# Path to the boot partition mount point.
+# Default:
+# boot="/boot"
+
+# Title of the main refind linux menu. If not specified, it will be autodetected via lsb_release.
+# menu_title=""
+
+# Configuration directives to be placed at the outermost level of the refind config file.
+# Default:
+# conf_outer=()
+
+# Configuration directives to be placed within the main refind linux menu
+# Default:
+# conf_inner=()
+
+# The different boot types for which you would like to generate boot submenu entries.
+# Boot type names should match the regular expression [a-zA-Z0-9_]+. The boot type "all" is reserved.
+# Default:
+# boot_types=("basic" "fallback")
+
+# Manually specify for which kernels boot entries should be generated.
+# If this array is empty, all installed kernels will have boot entries generated for them.
+# Default:
+# kernels=()
+
+# The default kernel to use.
+# Default:
+# default_kernel="linux"
+
+# The default boot type to use.
+# Default:
+# default_type="basic"
+
+# Kernel parameters to pass for all boot types.
+# Default:
+# params_all=()
+
+# To define kernel parameters specific to a given boot type, define an array
+# named params_\${boot_type}, e.g. params_basic.
+
+# Character to use for indentation, either a tab or a space.
+# Default:
+# indent_char=" "
+
+# Number of indent characters per indent level.
+# Default:
+# indent_size=2
+
+EOF
+}
+
+function example_conf() {
+  cat >&2 << EOF
+# Example configuration for $prog
+# Make sure you edit this file to reflect your actual setup!
+
+# Path to the boot partition mount point.
+# Default:
+# boot="/boot"
+
+# Title of the main refind linux menu. If not specified, it will be autodetected via lsb_release.
+# menu_title="Arch Linux"
+
+# Configuration directives to be placed at the outermost level of the refind config file.
+# Default:
+# conf_outer=()
+conf_outer=(
+  "include /EFI/refind/themes/refind-ambience/theme.conf"
+  "icons_dir /EFI/refind/themes/refind-ambience/icons"
+  "scan_all_linux_kernels false"
+  "timeout 20"
+  "screensaver 300"
+)
+
+# Configuration directives to be placed within the main refind linux menu
+# Default:
+# conf_inner=()
+conf_inner=(
+  "icon /EFI/refind/themes/refind-ambience/icons/os_arch.png"
+  'volume "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"'
+)
+
+# The different boot types for which you would like to generate boot submenu entries.
+# Boot type names should match the regular expression [a-zA-Z0-9_]+. The boot type "all" is reserved.
+# Default:
+# boot_types=("basic" "fallback")
+boot_types=(
+  "apparmor"
+  "basic"
+  "minimal"
+  "fallback"
+)
+
+# Manually specify for which kernels boot entries should be generated.
+# If this array is empty, all installed kernels will have boot entries generated for them.
+kernels=("linux-clear-bin" "linux-ck-zen" "linux-zen" "linux")
+
+# The default kernel to use.
+# Default:
+# default_kernel="linux"
+default_kernel="linux-ck-zen"
+
+# The default boot type to use.
+# Default:
+# default_type="basic"
+default_type="apparmor"
+
+# Kernel parameters to pass for all boot types.
+# Default:
+# params_all=()
+params_all=(
+  "ro"
+  "rd.luks.uuid=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  "rd.luks.name=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx=system"
+  "root=/dev/mapper/system"
+  "rootflags=subvol=@"
+)
+
+# To define kernel parameters specific to a given boot type, define an array
+# named params_\${boot_type}, e.g. params_basic.
+
+# Kernel parameters to pass for the 'basic' boot type.
+params_basic=(
+  "splash"
+  "quiet"
+  "consoleblank=60"
+  "fbcon=scrollback:256k"
+  "initrd=\\amd-ucode.img"
+)
+
+# Kernel parameters to pass for the 'apparmor' boot type.
+params_apparmor=(
+  "\${params_basic[@]}"
+  "apparmor=1"
+  "security=apparmor"
+)
+
+# Kernel parameters to pass for the 'minimal' boot type.
+params_minimal=(
+  "nosplash"
+)
+
+# Kernel parameters to pass for the 'fallback' boot type.
+params_fallback=(
+  "\${params_minimal[@]}"
+)
+
+# Character to use for indentation, either a tab or a space.
+# Default:
+# indent_char=" "
+
+# Number of indent characters per indent level.
+# Default:
+# indent_size=2
+
+EOF
+}
+
+function load_conf() {
+  if [[ -n "${conf:-}" ]]; then
+    # shellcheck disable=1090
+    source "$conf" || {
+      echo "$prog: unable to load configuration file" >&2
+      return 1
+    }
+  fi
+
+  # Path to the boot partition mount point.
+  [[ -v boot ]] || {
+    declare -g boot=""
+    if [[ -d "/boot" ]]; then
+      boot="/boot"
+    fi
+  }
+
+  # Title for the main refind menu item
+  [[ -v menu_title && -n "${menu_title}" ]] || {
+    menu_title="$(lsb_release -sd | tr -d '"')"
+  }
+
+  # Configuration directives to be placed at the outermost level of the refind config file.
+  [[ -v conf_outer ]] || conf_outer=()
+
+  # Configuration directives to be placed within the main refind linux menu
+  [[ -v conf_inner ]] || conf_inner=()
+
+  # The default kernel to use.
+  [[ -v default_kernel ]] || default_kernel="linux"
+
+  # The different boot types for which you would like to generate boot submenu entries.
+  [[ -v boot_types ]] || boot_types=(
+    "basic"
+    "fallback"
+  )
+
+  if [[ ! -v default_type && -v 'boot_types[0]' ]]; then
+    # The default boot type to use.
+    default_type="${boot_types[0]}"
+  fi
+
+  # Parameters which should be passed for all boot types
+  [[ -v params_all ]] || params_all=()
+
+  # Manually specify for which kernels boot entries should be generated.
+  # If this array is empty, all installed kernels will have boot entries generated for them.
+  [[ -v kernels ]] || kernels=()
+
+  # Character to use for indentation, either a tab or a space.
+  [[ -v indent_char ]] || indent_char=" "
+
+  # Number of indent characters per indent level.
+  [[ -v indent_size ]] || indent_size=2
+}
+
+function out() {
+  local -i i=$((indent * indent_size))
+  [[ $i -ge 1 && -n "$*" ]] && printf "${indent_char}%.0s" $(seq 1 $i)
+  echo "$*"
+}
+
+function submenu() {
+  [[ $# -eq 3 ]] || {
+    echo "submenu: expected 3 arguments, got $#" >&2
+    return 1
+  }
+  local -i submenu=$1
+  local kernel="$2"
+  local type="$3"
+  if [[ $submenu -eq 1 ]]; then
+    out "submenuentry \"$kernel ($type)\" {"
+    indent=$((indent + 1))
+  fi
+}
+
+function submenu_end() {
+  [[ $# -eq 1 ]] || {
+    echo "submenu: expected 1 arguments, got $#" >&2
+    return 1
+  }
+  local -i submenu=$1
+  if [[ $submenu -eq 1 ]]; then
+    indent=$((indent - 1))
+    out "}"
+  fi
+}
+
+function entry() {
+  local -i submenu=0
+
+  local opt OPTARG
+  local -i OPTIND
+  while getopts "s" opt "$@"; do
+    case "$opt" in
+    s)
+      submenu=1
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  [[ $# -eq 2 ]] || {
+    echo "entry: expected 2 args, got $#" >&2
+    return 1
+  }
+
+  local type="$1"
+  local kernel="$2"
+
+  if [[ -v "params_$type" ]]; then
+    local -n params="params_$type"
+  else
+    local -a params=()
+  fi
+
+  local loader="vmlinuz-${kernel}"
+
+  local initrd
+  if [[ $type == "fallback" ]]; then
+    initrd="initramfs-${kernel}-fallback.img"
+  else
+    initrd="initramfs-${kernel}.img"
+  fi
+
+  submenu $submenu "$kernel" "$type"
+  out "loader  /${loader}"
+  out "options \"initrd=\\${initrd}${params:+ ${params[*]}}${params_all:+ ${params_all[*]}}\""
+  submenu_end $submenu
+}
+
+function usage() {
+  cat >&2 << EOF
+usage: $prog [opts] [kernel ..]
+
+Options:
+
+  -h            Print this help message.
+  -c <config>   Use <config> file to configure refind-genconf (wow such config).
+  -x            Print the default configuration file.
+  -X            Print an example configuration file.
+
+$prog generates refind configuration files
+EOF
+}
+
+function main() {
+  local opt OPTARG
+  local -i OPTIND
+  while getopts "hxXc:" opt "$@"; do
+    case "$opt" in
+    h)
+      usage
+      return 0
+      ;;
+    x)
+      default_conf
+      return 0
+      ;;
+    X)
+      example_conf
+      return 0
+      ;;
+    c)
+      conf="$OPTARG"
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  load_conf
+
+  if [[ $# -gt 0 ]]; then
+    kernels=("$@")
+  fi
+
+  if [[ ${#kernels[@]} -eq 0 ]]; then
+    mapfile -t kernels <<< "$(
+      find "$boot" -mindepth 1 -maxdepth 1 -type f -name 'initramfs*.img' -a '!' -name '*-fallback.img' -exec basename '{}' ';' \
+        | sed 's/^initramfs-//; s/\.img$//'
+    )"
+  fi
+
+  out "# NOTE: This file was auto-generated by $prog. Do not edit directly."
+  out
+
+  for l in "${conf_outer[@]}"; do
+    out "$l"
+  done
+
+  [[ ${#conf_outer[@]} -gt 0 ]] && out
+
+  out "menuentry \"${menu_title}\" {"
+
+  indent=$((indent + 1))
+
+  out "ostype \"Linux\""
+
+  for l in "${conf_inner[@]}"; do
+    out "$l"
+  done
+
+  [[ -v default_kernel && -v default_type ]] && {
+    out
+    out "# Default: $default_kernel ($default_type)"
+    entry "$default_type" "$default_kernel"
+  }
+
+  for kernel in "${kernels[@]}"; do
+    out
+    out "# $kernel {{{"
+    out
+    for type in "${boot_types[@]}"; do
+      entry -s "$type" "$kernel"
+      out
+    done
+    out "# }}}"
+  done
+
+  indent=$((indent - 1))
+
+  out "}"
+  out
+
+  indent=0
+
+  # Output a vim modeline at the bottom of the refind conf
+  # The following line uses a weird string concatenation trick to prevent vim
+  # from using it as the modeline for this script.
+  out "# v""im:set fdm=marker fdl=2 ft=conf sw=2 sts=2 et:"
+}
+
+main "$@"
