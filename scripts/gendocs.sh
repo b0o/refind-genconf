@@ -41,7 +41,7 @@ Released under the GNU General Public License, version 3.0 or later.
 EOF
 )"
 
-function gen_section() {
+function regen_section() {
   local section="$1"
   local content="$2"
   awk -v "section=$section" -v "content=$content" '
@@ -70,6 +70,6 @@ function gen_section() {
 }
 
 for sec in "${!sections[@]}"; do
-  gen_section "$sec" "${sections[$sec]}" > "${readme}_"
+  regen_section "$sec" "${sections[$sec]}" > "${readme}_"
   mv "${readme}_" "$readme"
 done
